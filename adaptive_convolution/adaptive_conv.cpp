@@ -2,13 +2,30 @@
 #include <torch/torch.h>
 #include <torch/extension.h>
 #include <pybind11/pybind11.h>
+#include <iostream>
 
 using torch::Tensor;
+
+void print_tensor_sizes(const torch::Tensor& sparse_tensor, const torch::Tensor& flat_image) {
+    // Print the shape of sparse_tensor
+    std::cout << "Sparse tensor shape: ";
+    for (auto dim : sparse_tensor.sizes()) {
+        std::cout << dim << " ";
+    }
+    std::cout << std::endl;
+
+    // Print the shape of flat_image tensor
+    std::cout << "Flat image tensor shape: ";
+    for (auto dim : flat_image.sizes()) {
+        std::cout << dim << " ";
+    }
+    std::cout << std::endl;
+}
 
 
 namespace adaptive_conv {
 // Custom Forward Pass for Adaptive Convolution
-Tensor adaptive_conv_forward(Tensor input, Tensor filters) {
+Tensor forward(Tensor input, Tensor filters) {
     // Get shapes of input and filters
     auto B = input.sizes()[0];
     auto C_in = input.sizes()[1];
@@ -27,39 +44,48 @@ Tensor adaptive_conv_forward(Tensor input, Tensor filters) {
     assert(H_out + I - 1 == H_in);
     assert(W_out + J - 1 == W_in);
 
+    Tensor flat_image = input.view({B, C_in * H_in * W_in});
 
-    // Reshape input to be a vector of patches (unfolded image)
-    Tensor image_vector = torch::flatten(input, 1);  // Shape: (B, C_in * H_in * W_in)
+    // Sparse Filter creation
 
+    std::vector<long> indices; // Store indices of non-zero values
+    std::vector<float> values; // Store non-zero values
 
-    // Reshape filter to a sparse matrix form (with zeros added for padding/stride simulation)
-    auto unfolded_filters = torch::flatten(filters, 1);  // Shape: (B, H_out * W_out * C_in * I * J)
-
-
-    // Prepare the filter to be sparse by adding zeros
-    auto sparse_filter = torch::zeros_like(unfolded_filters);  // Start with a zeroed matrix
-
-
-    // Manually insert non-zero filter values into the sparse matrix
+    // Loop through the filter tensor and collect indices and values
     for (int b = 0; b < B; ++b) {
-        for (int h_out = 0; h_out < H_out; ++h_out) {
-            for (int w_out = 0; w_out < W_out; ++w_out) {
-                for (int c_in = 0; c_in < C_in; ++c_in) {
-                    for (int i = 0; i < I; ++i) {
-                        for (int j = 0; j < J; ++j) {
-                            int row_idx = b * (H_out * W_out * C_in * I * J) + (h_out * W_out * C_in * I * J) + (w_out * C_in * I * J) + (c_in * I * J) + (i * J) + j;
-                            sparse_filter[row_idx] = unfolded_filters[b * (H_out * W_out * C_in * I * J) + (h_out * W_out * C_in * I * J) + (w_out * C_in * I * J) + (c_in * I * J) + (i * J) + j];
-                        }
+        for (int h = 0; h < H_out; ++h) {
+            for (int w = 0; w < W_out; ++w) {
+                for (int i = 0; i < I; ++i) {
+                    for (int j = 0; j < J; ++j) {
+                        float val = filters[b][h][w][i][j].item<float>();
+                        if (val != 0.0f) {  // Store only non-zero values
+                            indices.push_back(b);  // Row index: batch dimension
+                            indices.push_back(h * W_out + w);  // Flatten (h, w)
+                            indices.push_back(i * J + j);  // Flatten (i, j)
+                            values.push_back(val);
                     }
                 }
             }
         }
     }
+}
 
+    // Indices tensor: Shape (3, num_non_zero_elements)
+    auto indices_tensor = torch::tensor(indices, torch::kLong).view({3, -1});
 
-    // Sparse matmul
-    auto unfolded_input = image_vector.view({B, C_in * H_in * W_in, -1});  // Shape: (B, C_in * H_in * W_in, H_out * W_out)
-    auto out = torch::matmul(sparse_filter, unfolded_input);
+    // Values tensor: Shape (num_non_zero_elements)
+    auto values_tensor = torch::tensor(values, torch::kFloat);
+
+    // Create sparse tensor
+    assert(indices.size() / 3 == values.size() && "Number of indices and values must match!");
+    Tensor sparse_filter = torch::sparse_coo_tensor(indices_tensor, values_tensor, {B, H_out * W_out, I * J}, torch::kFloat);
+
+    //Print sizes:
+
+    print_tensor_sizes(sparse_filter, flat_image);
+
+    // auto flat_image_t = flat_image.transpose(0, 1);
+    auto out = torch::_sparse_mm(sparse_filter, flat_image);
 
 
     // Reshape the output to (B, C_in, H_out, W_out)
@@ -71,7 +97,7 @@ Tensor adaptive_conv_forward(Tensor input, Tensor filters) {
 
 
 // Custom Gradient for Input (Backward Pass)
-Tensor adaptive_conv_grad_input(Tensor grad_output, Tensor filters) {
+Tensor grad_input(Tensor grad_output, Tensor filters) {
     auto B = grad_output.sizes()[0];
     auto C_out = grad_output.sizes()[1];
     auto H_out = grad_output.sizes()[2];
@@ -132,7 +158,7 @@ Tensor adaptive_conv_grad_input(Tensor grad_output, Tensor filters) {
 
 
 // Custom Gradient for Filters (Backward Pass)
-Tensor adaptive_conv_grad_filters(Tensor grad_output, Tensor input) {
+Tensor grad_filters(Tensor grad_output, Tensor input) {
 
 
     auto B = grad_output.sizes()[0];
@@ -209,7 +235,7 @@ Tensor adaptive_conv_grad_filters(Tensor grad_output, Tensor input) {
 
 // Expose the functions to Python
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("forward", &adaptive_conv::adaptive_conv_forward, "Adaptive Convolution Forward");
-    m.def("grad_input", &adaptive_conv::adaptive_conv_grad_input, "Adaptive Convolution Gradient Input");
-    m.def("grad_filters", &adaptive_conv::adaptive_conv_grad_filters, "Adaptive Convolution Gradient Filters");
+    m.def("forward", &adaptive_conv::forward, "Adaptive Convolution Forward");
+    m.def("grad_input", &adaptive_conv::grad_input, "Adaptive Convolution Gradient Input");
+    m.def("grad_filters", &adaptive_conv::grad_filters, "Adaptive Convolution Gradient Filters");
 }

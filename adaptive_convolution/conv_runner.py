@@ -1,12 +1,11 @@
 from torch.autograd import Function
 import torch
-import conv_runner as adaptive_conv  # The compiled module
+import adaptive_conv # The compiled module
 
 
 torch.manual_seed(42)
 
 class AdaptiveConv(Function):
-
 
     @staticmethod
     def forward(ctx, input, filters):
@@ -14,8 +13,6 @@ class AdaptiveConv(Function):
         b, h2, w2, f1, f2 = filters.shape
         assert f1 == f2
         result = adaptive_conv.forward(input, filters)
-
-
         return result
 
 
@@ -25,7 +22,6 @@ class AdaptiveConv(Function):
         grad_input = grad_filters = None
         b, h2, w2, f1, f2 = filters.shape
         assert f1 == f2
-
 
         grad_output = grad_output.contiguous()
         if ctx.needs_input_grad[0]:
