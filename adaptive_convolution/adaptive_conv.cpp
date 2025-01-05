@@ -44,7 +44,7 @@ Tensor forward(Tensor input, Tensor filters) {
     assert(H_out + I - 1 == H_in);
     assert(W_out + J - 1 == W_in);
 
-    Tensor flat_image = input.view({B, C_in * H_in * W_in});
+    Tensor flat_image = input.view({B, C_in * H_in * W_in}).to(torch::kFloat);
 
     // Sparse Filter creation
 
@@ -78,18 +78,21 @@ Tensor forward(Tensor input, Tensor filters) {
 
     // Create sparse tensor
     assert(indices.size() / 3 == values.size() && "Number of indices and values must match!");
+
     Tensor sparse_filter = torch::sparse_coo_tensor(indices_tensor, values_tensor, {B, H_out * W_out, I * J}, torch::kFloat);
 
-    //Print sizes:
+    auto C_out = sparse_filter.sizes()[1] / H_out;
+    assert(C_out * H_out == sparse_filter.sizes()[1] && "Number of output channels must be divisible by H_out");
+
+    sparse_filter = sparse_filter.to_dense().view({B, C_out * H_out * I * J});
 
     print_tensor_sizes(sparse_filter, flat_image);
 
-    // auto flat_image_t = flat_image.transpose(0, 1);
-    auto out = torch::_sparse_mm(sparse_filter, flat_image);
+    auto out = torch::mm(sparse_filter.t(), flat_image);
 
 
     // Reshape the output to (B, C_in, H_out, W_out)
-    out = out.view({B, C_in, H_out, W_out}).permute({0, 3, 1, 2});  // Change to (B, C_in, H_out, W_out)
+    out = out.view({B, C_out, H_out, W_out}).permute({0, 3, 1, 2});  // Change to (B, C_in, H_out, W_out)
 
 
     return out;

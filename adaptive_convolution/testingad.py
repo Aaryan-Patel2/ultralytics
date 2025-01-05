@@ -3,7 +3,7 @@ from conv_runner import AdaptiveConv  # Assuming your module is defined here
 
 def test_adaptive_conv():
     # Define the dimensions
-    B = 2  # Batch size
+    B = 2 # Batch size
     C_in = 3  # Input channels
     H_in, W_in = 32, 32  # Input height and width
     C_out = 4  # Output channels
