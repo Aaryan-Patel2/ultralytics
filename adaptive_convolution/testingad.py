@@ -15,8 +15,11 @@ def test_adaptive_conv():
     W_out = (W_in - J) // stride + 1
 
     # Create random tensors for input and filters
-    input_tensor = torch.randn(B, C_in, H_in, W_in, requires_grad=True, dtype=torch.double)  # Input
-    filters = torch.randn(B, C_out, H_out, I, J, requires_grad=True, dtype=torch.double)  # Adaptive filters
+    input_tensor = torch.randn((B, C_in, H_in, W_in), requires_grad=True, dtype=torch.double)  # Input
+    filters = torch.randn((B, H_out, W_out, I, J), requires_grad=True, dtype=torch.double)  # Adaptive filters
+
+    print(f"Size of the Input Tensor: {input_tensor.size()}")
+    print(f"Size of the Filter Tensor: {filters.size()}")
 
     # Forward pass using AdaptiveConv.apply()
     output = AdaptiveConv.apply(input_tensor, filters)

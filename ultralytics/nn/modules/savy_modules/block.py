@@ -136,7 +136,7 @@ class JBULearnedRange(torch.nn.Module):
 
         # (B C, H+Pad, W+Pad) x (B, H, W, KH, KW) -> BCHW; Figure out CUDA impl.
         result =  AdaptiveConv.apply(hr_source_padded, combined_kernel)
-        return None
+        return result
 
 class JBUStack(torch.nn.Module):
     def __init__(self, feat_dim, stack_count, *args, **kwargs):
@@ -155,14 +155,10 @@ class JBUStack(torch.nn.Module):
         return upsampled
 
 
-
-
     def forward(self, source, guidance):
         for up in self.upsamplers:
             source = self.upsample(source, guidance, up)
         return self.fixup_proj(source) * 0.1 + source
-
-
 
 
 class AttentionDownsampler(torch.nn.Module):

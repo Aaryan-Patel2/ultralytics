@@ -6,97 +6,83 @@
 
 using torch::Tensor;
 
-void print_tensor_sizes(const torch::Tensor& sparse_tensor, const torch::Tensor& flat_image) {
-    // Print the shape of sparse_tensor
-    std::cout << "Sparse tensor shape: ";
-    for (auto dim : sparse_tensor.sizes()) {
-        std::cout << dim << " ";
-    }
-    std::cout << std::endl;
+Tensor create_block_matrix(const Tensor & kernel, int input_size, int output_size) {
+    int I = kernel.size(3);  // Kernel height (I)
+    int J = kernel.size(4);   // Kernel width (J)
+    int t = output_size;  // Output size (from sliding window dimensions)
+    int n = input_size;  // Input size (from input dimensions)
 
-    // Print the shape of flat_image tensor
-    std::cout << "Flat image tensor shape: ";
-    for (auto dim : flat_image.sizes()) {
-        std::cout << dim << " ";
+    std::vector<Tensor> K_blocks; // Initialize a vector to store the block matrices
+
+    // Construct the block matrix
+    for (int i = 0; i < I; i++) {
+
+        auto K_i = torch::zeros({t, n}); // Initialize the block matrix K_i
+        
+        for (int row = 0; row < I; row++) {  
+            // Extract the row of the kernel (the sliding window)
+            auto kernel_row = kernel[i];  // This is a row from the kernel (of size J)
+
+            // Now slide the kernel row into the K_i matrix
+            // The starting position for this kernel row will depend on the row of K_i
+            int start_idx = row;
+            int end_idx = start_idx + (J-row);  // Kernel width is J
+
+            // Assign the kernel values to the correct positions in K_i
+            K_i.index({row, torch::indexing::Slice(start_idx, end_idx)}) = kernel_row;
+        }
+        K_blocks.push_back(K_i);
     }
-    std::cout << std::endl;
+
+    // Concatenate the block matrices to form the block matrix M
+    Tensor M = K_blocks[0];  // Start with the first K_i matrix
+
+    for (size_t i = 1; i < K_blocks.size(); i++) {
+        M = torch::cat({M, K_blocks[i]}, 1);
+    }
+
+    return M;
 }
-
 
 namespace adaptive_conv {
-// Custom Forward Pass for Adaptive Convolution
-Tensor forward(Tensor input, Tensor filters) {
-    // Get shapes of input and filters
-    auto B = input.sizes()[0];
-    auto C_in = input.sizes()[1];
-    auto H_in = input.sizes()[2];
-    auto W_in = input.sizes()[3];
+    // Custom Forward Pass for Adaptive Convolution
+    Tensor forward(Tensor input, Tensor filters) {
+        int batch_size = input.size(0);
+        int channels = input.size(1);
+        int height = input.size(2);
+        int width = input.size(3);
 
+        int kernel_height = filters.size(3);
+        int kernel_width = filters.size(4);
 
-    assert(filters.sizes()[0] == B);
-    auto H_out = filters.sizes()[1];
-    auto W_out = filters.sizes()[2];
-    auto I = filters.sizes()[3];
-    auto J = filters.sizes()[4];
+        int output_height = height - kernel_height + 1;
+        int output_width = width - kernel_width + 1;
 
+        // Initialize an output tensor with proper dimensions
+        Tensor output = torch::zeros({batch_size, channels, output_height, output_width});
 
-    assert(I == J);
-    assert(H_out + I - 1 == H_in);
-    assert(W_out + J - 1 == W_in);
+        // Loop over each batch element (image) independently
+        for (int b = 0; b < batch_size; b++) {
+            // Loop over each channel independently
+            for (int c = 0; c < channels; c++) {
+                // Extract the kernel for the current channel
+                auto filter = filters[b][c]; // [I, J] kernel for the current channel
 
-    Tensor flat_image = input.view({B, C_in * H_in * W_in}).to(torch::kFloat);
+                // Create the block matrix for the current kernel
+                Tensor M = create_block_matrix(filter, height, output_height);
 
-    // Sparse Filter creation
+                // Flatten the input tensor spatially for the current batch and channel
+                auto input_flat = input[b][c].view({-1}); // [n*n]
 
-    std::vector<long> indices; // Store indices of non-zero values
-    std::vector<float> values; // Store non-zero values
+                // Perform matrix multiplication: M * input_flat
+                auto result = torch::matmul(M, input_flat);
 
-    // Loop through the filter tensor and collect indices and values
-    for (int b = 0; b < B; ++b) {
-        for (int h = 0; h < H_out; ++h) {
-            for (int w = 0; w < W_out; ++w) {
-                for (int i = 0; i < I; ++i) {
-                    for (int j = 0; j < J; ++j) {
-                        float val = filters[b][h][w][i][j].item<float>();
-                        if (val != 0.0f) {  // Store only non-zero values
-                            indices.push_back(b);  // Row index: batch dimension
-                            indices.push_back(h * W_out + w);  // Flatten (h, w)
-                            indices.push_back(i * J + j);  // Flatten (i, j)
-                            values.push_back(val);
-                    }
-                }
+                // Reshape the result to the output dimensions
+                output[b][c] = result.view({output_height, output_width});
             }
         }
+        return output;
     }
-}
-
-    // Indices tensor: Shape (3, num_non_zero_elements)
-    auto indices_tensor = torch::tensor(indices, torch::kLong).view({3, -1});
-
-    // Values tensor: Shape (num_non_zero_elements)
-    auto values_tensor = torch::tensor(values, torch::kFloat);
-
-    // Create sparse tensor
-    assert(indices.size() / 3 == values.size() && "Number of indices and values must match!");
-
-    Tensor sparse_filter = torch::sparse_coo_tensor(indices_tensor, values_tensor, {B, H_out * W_out, I * J}, torch::kFloat);
-
-    auto C_out = sparse_filter.sizes()[1] / H_out;
-    assert(C_out * H_out == sparse_filter.sizes()[1] && "Number of output channels must be divisible by H_out");
-
-    sparse_filter = sparse_filter.to_dense().view({B, C_out * H_out * I * J});
-
-    print_tensor_sizes(sparse_filter, flat_image);
-
-    auto out = torch::mm(sparse_filter.t(), flat_image);
-
-
-    // Reshape the output to (B, C_in, H_out, W_out)
-    out = out.view({B, C_out, H_out, W_out}).permute({0, 3, 1, 2});  // Change to (B, C_in, H_out, W_out)
-
-
-    return out;
-}
 
 
 // Custom Gradient for Input (Backward Pass)
