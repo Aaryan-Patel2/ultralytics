@@ -171,3 +171,6 @@ pnnx*
 
 # calibration image
 calibration_*.npy
+
+# Future work
+.smm_conv.cpp
